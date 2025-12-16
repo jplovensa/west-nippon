@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>West Nippon - Photorealistic Architecture</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #000; }
+        canvas { display: block; }
+        
+        #ui-container {
+            position: absolute;
+            top: 20px; left: 20px; z-index: 10;
+            background: rgba(10, 10, 10, 0.8);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 24px;
+            border-radius: 16px;
+            color: #eee;
+            border: 1px solid rgba(255,255,255,0.1);
+            width: 380px;
+            box-shadow: 0 40px 80px rgba(0,0,0,0.8);
+            transition: all 0.5s ease;
+        }
+
+        h1 { margin: 0 0 4px 0; font-size: 1.1rem; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; color: #fff; }
+        h2 { margin: 0 0 16px 0; font-size: 0.7rem; letter-spacing: 1px; color: #666; font-weight: 500; text-transform: uppercase; }
+        p { font-size: 0.8rem; color: #999; margin-bottom: 24px; line-height: 1.5; font-weight: 400; }
+        
+        .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 20px; }
+
+        button {
+            padding: 12px 0;
+            border: 1px solid rgba(255,255,255,0.05);
+            background: rgba(255,255,255,0.02);
+            color: #666;
+            cursor: pointer;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.6rem;
+            letter-spacing: 0.5px;
+            border-radius: 6px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        button:hover { background: rgba(255,255,255,0.1); color: #fff; transform: translateY(-1px); }
+
+        #btn-ground.active { background: #e3d5c5; color: #000; border-color: #e3d5c5; box-shadow: 0 0 20px rgba(227, 213, 197, 0.3); }
+        #btn-underground.active { background: #aa0000; color: #fff; border-color: #aa0000; box-shadow: 0 0 20px rgba(170, 0, 0, 0.4); }
+        #btn-stack.active { background: #fff; color: #000; border-color: #fff; box-shadow: 0 0 20px rgba(255, 255, 255, 0.2); }
+
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.8); font-family: monospace; font-size: 0.9rem;
+            pointer-events: none; transition: opacity 0.8s ease;
+            background: rgba(0,0,0,0.8); padding: 20px 40px; border-radius: 30px;
+            border: 1px solid rgba(255,255,255,0.1); z-index: 100;
+            text-transform: uppercase; letter-spacing: 3px;
+        }
+
+        .tag { 
+            position: absolute; font-size: 0.7rem; color: rgba(255,255,255,0.4); 
+            bottom: 24px; right: 24px; letter-spacing: 1px;
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1 id="scene-title">West Nippon</h1>
+        <h2 id="scene-subtitle">Architectural Visualization</h2>
+        <p id="scene-desc">Photorealistic rendering engine active. Featuring SSAO (Ambient Occlusion), Global Illumination Approximation, and PBR Materials.</p>
+        
+        <div class="controls">
+            <button id="btn-stack" class="active" onclick="window.switchScene('stack')">Full View</button>
+            <button id="btn-ground" onclick="window.switchScene('ground')">Restaurant</button>
+            <button id="btn-underground" onclick="window.switchScene('underground')">Club</button>
+        </div>
+        
+        <div class="tag">RENDER MODE: ULTRA</div>
+    </div>
+
+    <div id="loading">Compiling Shaders...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
+        import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+        import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+        import { FlakesTexture } from 'three/addons/textures/FlakesTexture.js';
+
+        // --- Advanced Texture Engine (With Normal Maps) ---
+        const TextureGen = {
+            createCanvas(width, height) {
+                const canvas = document.createElement('canvas');
+                canvas.width = width; canvas.height = height;
+                return { canvas, ctx: canvas.getContext('2d') };
+            },
+            
+            // Helper to convert Height Map to Normal Map
+            heightToNormal(ctx, width, height) {
+                const imgData = ctx.getImageData(0, 0, width, height);
+                const data = imgData.data;
+                const normalCanvas = document.createElement('canvas');
+                normalCanvas.width = width; normalCanvas.height = height;
+                const normalCtx = normalCanvas.getContext('2d');
+                const normalData = normalCtx.createImageData(width, height);
+                
+                for(let y=0; y<height; y++){
+                    for(let x=0; x<width; x++){
+                        const i = (y*width+x)*4;
+                        // Sobel filter logic for gradients
+                        const left = data[((y*width + Math.max(0, x-1))*4)];
+                        const right = data[((y*width + Math.min(width-1, x+1))*4)];
+                        const up = data[((Math.max(0, y-1)*width + x)*4)];
+                        const down = data[((Math.min(height-1, y+1)*width + x)*4)];
+                        
+                        const dx = (right - left) * 2.0; // Strength
+                        const dy = (down - up) * 2.0;
+                        const dz = 255.0 / 2.0; // Smoothness
+                        
+                        const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                        
+                        normalData.data[i] = ((dx/len)*0.5 + 0.5) * 255;
+                        normalData.data[i+1] = ((dy/len)*0.5 + 0.5) * 255;
+                        normalData.data[i+2] = ((dz/len)*0.5 + 0.5) * 255;
+                        normalData.data[i+3] = 255;
+                    }
+                }
+                normalCtx.putImageData(normalData, 0, 0);
+                return normalCanvas;
+            },
+
+            getConcrete() {
+                const { canvas, ctx } = this.createCanvas(1024, 1024);
+                // Base
+                ctx.fillStyle = '#888'; ctx.fillRect(0,0,1024,1024);
+                // Noise
+                for(let i=0; i<200000; i++) {
+                    const shade = Math.random() * 40; 
+                    ctx.fillStyle = `rgb(${100+shade}, ${100+shade}, ${100+shade})`;
+                    ctx.fillRect(Math.random()*1024, Math.random()*1024, 2, 2);
+                }
+                // Stains
+                for(let i=0; i<20; i++) {
+                    ctx.globalAlpha = 0.05; ctx.fillStyle = '#000';
+                    ctx.beginPath(); ctx.arc(Math.random()*1024, Math.random()*1024, 50+Math.random()*100, 0, Math.PI*2); ctx.fill();
+                }
+                ctx.globalAlpha = 1.0;
+                
+                const normalCanvas = this.heightToNormal(ctx, 1024, 1024);
+                
+                const diff = new THREE.CanvasTexture(canvas);
+                const norm = new THREE.CanvasTexture(normalCanvas);
+                diff.wrapS = diff.wrapT = norm.wrapS = norm.wrapT = THREE.RepeatWrapping;
+                return { diff, norm };
+            },
+
+            getWood() {
+                const { canvas, ctx } = this.createCanvas(1024, 1024);
+                ctx.fillStyle = '#5c4033'; ctx.fillRect(0,0,1024,1024);
+                
+                // Grain
+                for(let i=0; i<1024; i+=2) {
+                    ctx.globalAlpha = 0.05 + Math.random()*0.05;
+                    ctx.fillStyle = '#3e2b22';
+                    const offset = Math.sin(i*0.02) * 20;
+                    ctx.fillRect(i + offset, 0, 1 + Math.random(), 1024);
+                }
+                ctx.globalAlpha = 1.0;
+                // Planks
+                ctx.lineWidth = 2; ctx.strokeStyle = '#2a1d17';
+                for(let i=0; i<1024; i+=128) {
+                    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 1024); ctx.stroke();
+                }
+
+                const normalCanvas = this.heightToNormal(ctx, 1024, 1024);
+                const diff = new THREE.CanvasTexture(canvas);
+                const norm = new THREE.CanvasTexture(normalCanvas);
+                diff.wrapS = diff.wrapT = norm.wrapS = norm.wrapT = THREE.RepeatWrapping;
+                diff.colorSpace = THREE.SRGBColorSpace;
+                return { diff, norm };
+            },
+
+            getLeather() {
+                 const { canvas, ctx } = this.createCanvas(512, 512);
+                 ctx.fillStyle = '#4a3c31'; ctx.fillRect(0,0,512,512);
+                 
+                 // Cellular noise
+                 for(let i=0; i<10000; i++) {
+                     ctx.fillStyle = Math.random() > 0.5 ? '#5c4b3d' : '#3d3128';
+                     ctx.globalAlpha = 0.3;
+                     ctx.beginPath(); ctx.arc(Math.random()*512, Math.random()*512, 1 + Math.random()*2, 0, Math.PI*2); ctx.fill();
+                 }
+                 const normalCanvas = this.heightToNormal(ctx, 512, 512);
+                 const diff = new THREE.CanvasTexture(canvas);
+                 const norm = new THREE.CanvasTexture(normalCanvas);
+                 return { diff, norm };
+            },
+            
+            getMarble() {
+                const { canvas, ctx } = this.createCanvas(512, 512);
+                ctx.fillStyle = '#fff'; ctx.fillRect(0,0,512,512);
+                ctx.strokeStyle = '#ccc'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+                ctx.filter = 'blur(4px)';
+                for(let i=0; i<8; i++){
+                    ctx.beginPath(); ctx.moveTo(Math.random()*512, Math.random()*512);
+                    ctx.bezierCurveTo(Math.random()*512, Math.random()*512, Math.random()*512, Math.random()*512, Math.random()*512, Math.random()*512);
+                    ctx.stroke();
+                }
+                const diff = new THREE.CanvasTexture(canvas);
+                return { diff };
+            }
+        };
+
+        // --- Furniture Builder (High Poly) ---
+        const Furniture = {
+            createChair(mat) {
+                const grp = new THREE.Group();
+                const legGeo = new THREE.CylinderGeometry(0.04, 0.02, 0.9, 16);
+                const legMat = new THREE.MeshStandardMaterial({color: 0x111, roughness: 0.5});
+                
+                [-0.2, 0.2].forEach(x => {
+                    [-0.2, 0.2].forEach(z => {
+                        const leg = new THREE.Mesh(legGeo, legMat);
+                        leg.position.set(x, 0.45, z); leg.castShadow = true; grp.add(leg);
+                    })
+                });
+
+                const seatGeo = new THREE.BoxGeometry(0.5, 0.1, 0.5);
+                // Add rounding
+                const seat = new THREE.Mesh(seatGeo, mat);
+                seat.position.y = 0.9; seat.castShadow = true; seat.receiveShadow = true;
+                grp.add(seat);
+
+                const backGeo = new THREE.BoxGeometry(0.5, 0.4, 0.05);
+                const back = new THREE.Mesh(backGeo, mat);
+                back.position.set(0, 1.15, -0.22); back.castShadow = true;
+                grp.add(back);
+                return grp;
+            },
+            createBarStool(mat) {
+                const grp = new THREE.Group();
+                const legGeo = new THREE.CylinderGeometry(0.03, 0.015, 1.6, 16);
+                const legMat = new THREE.MeshPhysicalMaterial({color: 0x222, metalness: 0.8, roughness: 0.2, clearcoat: 1.0});
+                
+                [-0.15, 0.15].forEach(x => {
+                    [-0.15, 0.15].forEach(z => {
+                        const leg = new THREE.Mesh(legGeo, legMat);
+                        leg.position.set(x, 0.8, z); 
+                        leg.rotation.x = z * 0.1; leg.rotation.z = x * -0.1;
+                        grp.add(leg);
+                    })
+                });
+                
+                const ring = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.02, 8, 32), legMat);
+                ring.rotation.x = Math.PI/2; ring.position.y = 0.5; grp.add(ring);
+
+                const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.1, 64), mat);
+                seat.position.y = 1.65; seat.receiveShadow = true; seat.castShadow = true;
+                grp.add(seat);
+                return grp;
+            }
+        };
+
+        // --- Globals ---
+        let scene, camera, renderer, controls, composer;
+        let groundGroup, undergroundGroup, stairsGroup;
+        let tex = {};
+        let envMap;
+
+        function init() {
+            RectAreaLightUniformsLib.init();
+
+            // 1. Generate Textures
+            const concrete = TextureGen.getConcrete();
+            const wood = TextureGen.getWood();
+            const leather = TextureGen.getLeather();
+            const marble = TextureGen.getMarble();
+
+            tex = {
+                concrete: concrete.diff, concreteNorm: concrete.norm,
+                wood: wood.diff, woodNorm: wood.norm,
+                leather: leather.diff, leatherNorm: leather.norm,
+                marble: marble.diff
+            };
+
+            // 2. Setup Renderer (High Quality)
+            renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", stencil: false, depth: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // Balance quality/perf
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 0.9;
+            document.body.appendChild(renderer.domElement);
+
+            // 3. Scene & Env
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            
+            // Environment Generation (PMREM)
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            pmremGenerator.compileEquirectangularShader();
+            const roomEnv = new THREE.Scene();
+            roomEnv.background = new THREE.Color(0x444); // Simple ambient
+            const light1 = new THREE.DirectionalLight(0xffffff, 2); light1.position.set(1,1,1); roomEnv.add(light1);
+            const light2 = new THREE.DirectionalLight(0xccccff, 1); light2.position.set(-1,-1,-0.5); roomEnv.add(light2);
+            envMap = pmremGenerator.fromScene(roomEnv).texture;
+            scene.environment = envMap;
+
+            // 4. Camera
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+            camera.position.set(40, 15, 40);
+
+            // 5. Post Processing Stack (Photorealism)
+            composer = new EffectComposer(renderer);
+            
+            // Render Pass
+            const renderPass = new RenderPass(scene, camera);
+            composer.addPass(renderPass);
+
+            // SSAO (Ambient Occlusion) - Key for realism
+            const ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+            ssaoPass.kernelRadius = 16;
+            ssaoPass.minDistance = 0.005;
+            ssaoPass.maxDistance = 0.1;
+            composer.addPass(ssaoPass);
+
+            // Bloom (Glow)
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.9; // Only very bright things glow
+            bloomPass.strength = 0.35;
+            bloomPass.radius = 0.5;
+            composer.addPass(bloomPass);
+
+            // Output (Tone Mapping baked in OutputPass in newer three versions, but explicit output pass helps)
+            const outputPass = new OutputPass();
+            composer.addPass(outputPass);
+
+            // 6. Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+            // 7. Build World
+            groundGroup = buildGround();
+            undergroundGroup = buildUnderground();
+            stairsGroup = buildStairs();
+
+            // Stack Position
+            undergroundGroup.position.y = -12;
+            stairsGroup.position.set(18, -12, 10);
+
+            scene.add(groundGroup);
+            scene.add(undergroundGroup);
+            scene.add(stairsGroup);
+
+            // Separator Slab
+            const slab = new THREE.Mesh(
+                new THREE.BoxGeometry(60, 2, 60),
+                new THREE.MeshStandardMaterial({color: 0x222, roughness: 0.9})
+            );
+            slab.position.y = -1; 
+            slab.castShadow = true; slab.receiveShadow = true;
+            scene.add(slab);
+
+            document.getElementById('loading').style.opacity = 0;
+            window.addEventListener('resize', onResize);
+            animate();
+            
+            // Initial Camera
+            gsapCamera({x:50, y:10, z:50}, {x:0, y:-6, z:0});
+        }
+
+        // --- Materials (PBR) ---
+        const MAT = {
+            concrete: () => new THREE.MeshStandardMaterial({ 
+                map: tex.concrete, normalMap: tex.concreteNorm, 
+                roughness: 0.8, color: 0xdddddd 
+            }),
+            woodFloor: () => new THREE.MeshPhysicalMaterial({ 
+                map: tex.wood, normalMap: tex.woodNorm, 
+                roughness: 0.4, metalness: 0.0, 
+                clearcoat: 0.3, clearcoatRoughness: 0.2 // Polished look
+            }),
+            leather: (color) => new THREE.MeshStandardMaterial({ 
+                map: tex.leather, normalMap: tex.leatherNorm, 
+                color: color, roughness: 0.6 
+            }),
+            copper: () => new THREE.MeshPhysicalMaterial({ 
+                color: 0xb87333, metalness: 1.0, roughness: 0.15,
+                clearcoat: 1.0 
+            }),
+            marble: () => new THREE.MeshPhysicalMaterial({
+                map: tex.marble, color: 0xffffff,
+                roughness: 0.05, metalness: 0.0,
+                clearcoat: 1.0 // High gloss
+            }),
+            glass: () => new THREE.MeshPhysicalMaterial({
+                color: 0xffffff, transmission: 0.9, 
+                opacity: 1, metalness: 0, roughness: 0, 
+                ior: 1.5, thickness: 0.5, side: THREE.DoubleSide
+            })
+        };
+
+        function buildGround() {
+            const g = new THREE.Group();
+            
+            // Floor
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), MAT.concrete());
+            floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
+            g.add(floor);
+
+            // Walls
+            const wallMat = new THREE.MeshStandardMaterial({color: 0xf0ece9, roughness: 0.9});
+            const backWall = new THREE.Mesh(new THREE.BoxGeometry(40, 8, 0.5), wallMat);
+            backWall.position.set(0, 4, -15); backWall.castShadow = true; backWall.receiveShadow = true;
+            g.add(backWall);
+
+            // Windows (Area Lights)
+            const rectLight = new THREE.RectAreaLight(0xfff0dd, 5, 20, 8);
+            rectLight.position.set(0, 4, 15); rectLight.lookAt(0, 4, 0);
+            g.add(rectLight);
+            // Window Glass Visual
+            const glassWall = new THREE.Mesh(new THREE.BoxGeometry(40, 8, 0.1), MAT.glass());
+            glassWall.position.set(0, 4, 15);
+            g.add(glassWall);
+
+            // Kitchen
+            const kCounter = new THREE.Mesh(new THREE.BoxGeometry(12, 1.1, 4), MAT.marble());
+            kCounter.position.set(-10, 0.55, -12); kCounter.castShadow = true; kCounter.receiveShadow = true;
+            g.add(kCounter);
+
+            // Copper Hoods
+            for(let i=0; i<3; i++) {
+                const hood = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 2, 2.5, 32, 1, true), MAT.copper());
+                hood.position.set(-13 + (i*4), 6, -12); hood.castShadow = true;
+                // Add point light inside hood
+                const hLight = new THREE.PointLight(0xffaa00, 2, 5);
+                hLight.position.set(0, -1, 0); hood.add(hLight);
+                g.add(hood);
+            }
+
+            // Lazy-S Sofa
+            const sShape = new THREE.Shape();
+            sShape.moveTo(-10, 6); sShape.bezierCurveTo(-4, 6, -4, -6, 2, -6); sShape.bezierCurveTo(8, -6, 8, 6, 14, 6);
+            sShape.bezierCurveTo(16, 6, 16, 8, 14, 8); sShape.bezierCurveTo(6, 8, 6, -4, 2, -4); sShape.bezierCurveTo(0, -4, 0, 8, -10, 8);
+            const sofa = new THREE.Mesh(
+                new THREE.ExtrudeGeometry(sShape, { depth: 0.6, bevelEnabled: true, bevelThickness:0.1, bevelSize:0.1 }), 
+                MAT.leather(0x8f6a4e)
+            );
+            sofa.rotation.x = -Math.PI/2; sofa.position.set(0, 0, 2); sofa.castShadow = true; sofa.receiveShadow = true;
+            g.add(sofa);
+
+            // Furniture Clusters
+            const tables = [{x:-6, z:4}, {x:6, z:4}, {x:0, z:10}, {x:10, z:-2}];
+            tables.forEach(p => {
+                const table = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 0.1, 32), MAT.marble());
+                table.position.set(p.x, 1.4, p.z); table.castShadow = true; g.add(table);
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1.4, 8), new THREE.MeshStandardMaterial({color:0x222}));
+                leg.position.set(p.x, 0.7, p.z); g.add(leg);
+
+                const c1 = Furniture.createChair(MAT.woodFloor()); c1.position.set(p.x-1.5, 0, p.z); c1.lookAt(p.x, 0, p.z); g.add(c1);
+                const c2 = Furniture.createChair(MAT.woodFloor()); c2.position.set(p.x+1.5, 0, p.z); c2.lookAt(p.x, 0, p.z); g.add(c2);
+            });
+
+            // Sunlight
+            const sun = new THREE.DirectionalLight(0xfff5e6, 3);
+            sun.position.set(30, 40, 20);
+            sun.castShadow = true;
+            sun.shadow.bias = -0.0001;
+            sun.shadow.mapSize.set(2048, 2048);
+            g.add(sun);
+            g.add(new THREE.AmbientLight(0xffffff, 0.4)); // Soft fill
+
+            return g;
+        }
+
+        function buildUnderground() {
+            const g = new THREE.Group();
+
+            // Polished Dark Floor
+            const floorMat = new THREE.MeshPhysicalMaterial({ 
+                color: 0x050505, roughness: 0.1, metalness: 0.2, 
+                clearcoat: 1.0, clearcoatRoughness: 0.1 
+            });
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), floorMat);
+            floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
+            g.add(floor);
+
+            // Brick Walls
+            const brickMat = new THREE.MeshStandardMaterial({ 
+                color: 0x111111, map: tex.concrete, normalMap: tex.concreteNorm, roughness: 0.9 
+            });
+            const wallBack = new THREE.Mesh(new THREE.BoxGeometry(50, 10, 1), brickMat);
+            wallBack.position.set(0, 5, -20); wallBack.receiveShadow = true;
+            g.add(wallBack);
+
+            // Akai Bar (Emissive)
+            const barBase = new THREE.Mesh(new THREE.BoxGeometry(14, 1.2, 2), new THREE.MeshStandardMaterial({color:0x000}));
+            barBase.position.set(-10, 0.6, -15); g.add(barBase);
+            
+            const barTop = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 2.2), new THREE.MeshStandardMaterial({
+                color: 0xff0000, emissive: 0xaa0000, emissiveIntensity: 2.0
+            }));
+            barTop.position.set(-10, 1.25, -15); g.add(barTop);
+            
+            // Bar Area Light (Red Glow)
+            const barRectLight = new THREE.RectAreaLight(0xff0000, 5, 14, 2);
+            barRectLight.position.set(-10, 1.3, -15);
+            barRectLight.rotation.x = -Math.PI/2;
+            g.add(barRectLight);
+
+            // Stools
+            for(let i=0; i<6; i++) {
+                const s = Furniture.createBarStool(MAT.leather(0x330000));
+                s.position.set(-15+(i*2), 0, -12); g.add(s);
+            }
+
+            // Private Lounge
+            const pSofa = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 8), MAT.leather(0x220000));
+            pSofa.position.set(15, 0.5, -15); pSofa.castShadow = true;
+            g.add(pSofa);
+            // Partition Glass
+            const glass = new THREE.Mesh(new THREE.BoxGeometry(0.2, 10, 15), MAT.glass());
+            glass.position.set(10, 5, -15);
+            g.add(glass);
+
+            // Neon Ceiling
+            for(let i=0; i<8; i++) {
+                const strip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 12), new THREE.MeshBasicMaterial({color:0xff0000}));
+                strip.position.set(-10 + (Math.random()*4), 9, -10 + (i*2));
+                strip.rotation.z = Math.random() * 0.5;
+                strip.rotation.y = Math.random() * 0.5;
+                g.add(strip);
+            }
+
+            // Stage Spotlights (Volumetric feel via cone mesh?)
+            // Just strong spots for now
+            const spot = new THREE.SpotLight(0x4444ff, 10);
+            spot.position.set(15, 9, 10); spot.target.position.set(15, 0, 10);
+            spot.angle = 0.5; spot.penumbra = 0.5; spot.castShadow = true;
+            g.add(spot); g.add(spot.target);
+
+            return g;
+        }
+
+        function buildStairs() {
+            const g = new THREE.Group();
+            const stepMat = MAT.concrete();
+            const railMat = new THREE.MeshStandardMaterial({color:0xff0000, emissive:0x550000});
+
+            for(let i=0; i<20; i++) {
+                const step = new THREE.Mesh(new THREE.BoxGeometry(4, 0.6, 1), stepMat);
+                step.position.set(0, i*0.6, -i); step.receiveShadow = true; step.castShadow = true;
+                g.add(step);
+                if(i%3===0) {
+                    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 2, 0.05), railMat);
+                    rail.position.set(2, i*0.6+1, -i); g.add(rail);
+                }
+            }
+            return g;
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            composer.render();
+        }
+
+        // Camera Logic
+        window.switchScene = function(type) {
+            document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            document.getElementById('btn-'+type).classList.add('active');
+
+            if(type === 'stack') {
+                groundGroup.visible = true; undergroundGroup.visible = true; stairsGroup.visible = true;
+                gsapCamera({x:55, y:8, z:55}, {x:0, y:-6, z:0});
+            } else if(type === 'ground') {
+                groundGroup.visible = true; undergroundGroup.visible = false; stairsGroup.visible = false;
+                gsapCamera({x:25, y:12, z:25}, {x:0, y:2, z:0});
+            } else if(type === 'underground') {
+                groundGroup.visible = false; undergroundGroup.visible = true; stairsGroup.visible = true;
+                gsapCamera({x:5, y:-5, z:30}, {x:0, y:-12, z:0});
+            }
+        };
+
+        function gsapCamera(targetPos, lookAt) {
+            const startPos = camera.position.clone();
+            const startLook = controls.target.clone();
+            let alpha = 0;
+            function tick() {
+                alpha += 0.015; if(alpha > 1) alpha = 1;
+                const ease = alpha < 0.5 ? 2*alpha*alpha : -1+(4-2*alpha)*alpha;
+                camera.position.lerpVectors(startPos, new THREE.Vector3(targetPos.x, targetPos.y, targetPos.z), ease);
+                controls.target.lerpVectors(startLook, new THREE.Vector3(lookAt.x, lookAt.y, lookAt.z), ease);
+                if(alpha<1) requestAnimationFrame(tick);
+            }
+            tick();
+        }
+
+        init();
+    </script>
+</body>
+</html>
